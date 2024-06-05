@@ -14,62 +14,54 @@ class ActivationDataset(Dataset):
         self.activations = []
         self.prompt_texts = []
         self.sampled_indices = []
-        self.prompt_batch_size = 12
+        self.sampled_tokens = []  # New list for decoded tokens
+        self.prompt_batch_size = 8
         self.device = model.device
 
     def __len__(self):
         return len(self.activations)
-    
+
     def __getitem__(self, idx):
         return {
             "activations": self.activations[idx],
             "prompt_texts": self.prompt_texts[idx],
             "sampled_indices": self.sampled_indices[idx],
+            "sampled_tokens": self.sampled_tokens[idx],  # Include sampled tokens in the batch
         }
 
     def process_prompts(self):
         for i in tqdm(range(0, len(self.prompts), self.prompt_batch_size), desc="Processing prompt batches"):
-            # Extract the actual prompt texts
             prompt_batch = [prompt_item["chosen"] for prompt_item in self.prompts[i : i + self.prompt_batch_size]]
-            input_ids = self.tokenizer(prompt_batch, return_tensors="pt", padding=True).to(self.device)
-    
+            input_ids = self.tokenizer(prompt_batch, return_tensors="pt", truncation=True, padding=True).to(self.device)
             attention_mask = input_ids["attention_mask"]
             input_ids = input_ids["input_ids"]
             
             with torch.no_grad():
                 outputs = self.model(input_ids, output_hidden_states=True)
-            activations = outputs.hidden_states[-1].cpu()
+                activations = outputs.hidden_states[-1].cpu()
+            
+            input_ids = input_ids.cpu()
+            attention_mask = attention_mask.cpu()
+            
             del outputs
             torch.cuda.empty_cache()
             
             for j in range(activations.size(0)):
-                # 1. Get the original (unpadded) input IDs
-                original_input_ids = input_ids[j][input_ids[j] != self.tokenizer.pad_token_id]  
-    
-                # 2. Get valid token indices (non-padded) using attention mask
-                valid_token_indices = torch.where(attention_mask[j] == 1)[0]
-    
-                # Sample from valid indices (this is where sampled_indices is defined)
-                sampled_indices = valid_token_indices[torch.randperm(valid_token_indices.size(0))[: self.num_samples_per_prompt]].cpu()
-    
-                # 3. Correct the sampled indices by subtracting the padding length
-                num_pad_tokens = input_ids[j].shape[0] - original_input_ids.shape[0] 
-                corrected_sampled_indices = sampled_indices - num_pad_tokens  
-    
-                # 4. Ensure indices are within the valid range
-                corrected_sampled_indices = corrected_sampled_indices[
-                    (corrected_sampled_indices >= 0) & (corrected_sampled_indices < original_input_ids.shape[0])
-                ]
-    
-                # 5. Sample from the valid, corrected indices (if any remain)
-                if len(corrected_sampled_indices) >= self.num_samples_per_prompt:
-                    corrected_sampled_indices = corrected_sampled_indices[torch.randperm(corrected_sampled_indices.size(0))[: self.num_samples_per_prompt]].cpu()
-    
-                    sampled_activations = activations[j][corrected_sampled_indices].float().numpy()
-                    
-                    self.activations.extend(np.ascontiguousarray(sampled_activations))
-                    self.prompt_texts.extend([prompt_batch[j]] * self.num_samples_per_prompt)
-                    self.sampled_indices.extend(np.ascontiguousarray(corrected_sampled_indices.numpy()))  # Use the corrected indices
+                num_pad_tokens = input_ids[j].shape[0] - torch.sum(attention_mask[j]).item()
+                valid_tokens = activations.size(1) - num_pad_tokens
+                
+                num_samples = min(self.num_samples_per_prompt, valid_tokens)
+                sampled_indices = np.random.choice(valid_tokens, num_samples, replace=False)
+                
+                sampled_activations = activations[j, sampled_indices + num_pad_tokens].to(torch.float32).cpu().numpy()
+                self.activations.extend(np.ascontiguousarray(sampled_activations))
+                self.prompt_texts.extend([prompt_batch[j]] * num_samples)
+                self.sampled_indices.extend(sampled_indices.tolist())
+                
+                for sampled_index in sampled_indices:
+                    sampled_token = self.tokenizer.decode(input_ids[j, sampled_index + num_pad_tokens].item())
+                    self.sampled_tokens.append(sampled_token)
+
 
 def load_new_samples(data_iter, num_prompts_to_load):
     new_prompts = []
