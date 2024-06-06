@@ -19,7 +19,9 @@ def evaluate_sae(model, dataloader, tokenizer, num_features=5, top_activations=1
         top_activations_data[feature_idx] = []
 
     with torch.no_grad():
-        for i, batch in enumerate(tqdm(dataloader)):
+        total_iterations = len(dataloader)
+        update_freq = max(1, total_iterations // 4)  # Update every 25% of total iterations
+        for i, batch in enumerate(tqdm(dataloader, total=total_iterations, update_freq=update_freq)):
             inputs = batch["activations"].to(device)
             prompt_texts = batch["prompt_texts"]  
             sampled_indices = batch["sampled_indices"]
@@ -71,7 +73,7 @@ def evaluate_sae(model, dataloader, tokenizer, num_features=5, top_activations=1
     torch.cuda.empty_cache()
 
 
-def get_feature_activations(model, prompts, feature_index, tokenizer):
+def get_feature_activations(model, autoencoder, prompts, feature_index, tokenizer):
     if isinstance(prompts, str):
         prompts = [prompts]
 
@@ -85,12 +87,12 @@ def get_feature_activations(model, prompts, feature_index, tokenizer):
             input_ids = input_ids["input_ids"]
 
             outputs = model(input_ids, output_hidden_states=True)
-            hidden_states = outputs.hidden_states[-1].cpu()
+            hidden_states = outputs.hidden_states[-1]
 
             num_pad_tokens = input_ids.shape[1] - torch.sum(attention_mask).item()
             valid_tokens = hidden_states.size(1) - num_pad_tokens
 
-            latent = model.encoder(hidden_states - model.decoder_bias) + model.encoder_bias
+            latent = autoencoder.encoder(hidden_states - autoencoder.decoder_bias) + autoencoder.encoder_bias
             feature_activations = latent[0, num_pad_tokens:, feature_index].cpu().numpy().tolist()
 
             activations_list.append(feature_activations)

@@ -17,6 +17,7 @@ class ActivationDataset(Dataset):
         self.sampled_tokens = []  # New list for decoded tokens
         self.prompt_batch_size = 8
         self.device = model.device
+        self.max_length = 3000*4 # Max length of prompt
 
     def __len__(self):
         return len(self.activations)
@@ -31,7 +32,7 @@ class ActivationDataset(Dataset):
 
     def process_prompts(self):
         for i in tqdm(range(0, len(self.prompts), self.prompt_batch_size), desc="Processing prompt batches"):
-            prompt_batch = [prompt_item["chosen"] for prompt_item in self.prompts[i : i + self.prompt_batch_size]]
+            prompt_batch = [prompt_item["text"][:self.max_length] for prompt_item in self.prompts[i : i + self.prompt_batch_size]]
             input_ids = self.tokenizer(prompt_batch, return_tensors="pt", truncation=True, padding=True).to(self.device)
             attention_mask = input_ids["attention_mask"]
             input_ids = input_ids["input_ids"]
